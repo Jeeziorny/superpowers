@@ -195,6 +195,10 @@ Use the least powerful model that can handle each role to conserve cost and incr
 
 **Mechanical implementation tasks** (isolated functions, clear specs, 1-2 files): use a fast, cheap model. Most implementation tasks are mechanical when the plan is well-specified.
 
+When a task carries a **Tier:** field, follow it — the planner already
+ruled: mechanical → the cheapest available model; judgment → a standard
+model. Do not re-litigate the tier at dispatch.
+
 **Integration and judgment tasks** (multi-file coordination, pattern matching, debugging): use a standard model.
 
 **Architecture and design tasks**: use the most capable available model.
@@ -216,7 +220,10 @@ most expensive — which silently defeats this section.
 **Turn count beats token price.** Wall-clock and context cost scale with how
 many turns a subagent takes, and the cheapest models routinely take 2-3× the
 turns on multi-step work — costing more overall. Use a mid-tier model as the
-floor for reviewers and for implementers working from prose descriptions.
+floor for reviewers and for implementers working from task contracts or
+prose descriptions — unless the task's Tier line says mechanical: the
+planner has already ruled the deliverable fully specified, so treat a
+mechanical-tier contract like spelled-out content.
 When the task's plan text contains the complete code to write, the
 implementation is transcription plus testing: use the cheapest tier for
 that implementer. Single-file mechanical fixes also take the cheapest tier.
