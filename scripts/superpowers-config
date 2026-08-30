@@ -34,8 +34,11 @@ project_config() { printf '%s/.superpowers/config' "$(repo_root)"; }
 read_key() {
     local file=$1 key=$2
     [ -f "$file" ] || return 0
+    # awk rather than `grep -v` for the blank-line filter: grep exits 1 when it
+    # matches nothing, and under `pipefail` that would fail the whole lookup
+    # instead of reporting "key absent".
     sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" \
-        | sed 's/[[:space:]]*$//' | grep -v '^$' | tail -n 1
+        | sed 's/[[:space:]]*$//' | awk 'NF' | tail -n 1
 }
 
 resolve() {
