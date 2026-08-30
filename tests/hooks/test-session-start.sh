@@ -38,8 +38,10 @@ assert_command_output() {
     local home="$5"
     shift 5
 
+    # The hook resolves configured paths relative to the checkout it runs in,
+    # so some cases need a specific working directory.
     local output
-    if ! output="$(env -i PATH="${PATH:-}" HOME="$home" "$@" 2>&1)"; then
+    if ! output="$( (cd "${HOOK_CWD:-$PWD}" && env -i PATH="${PATH:-}" HOME="$home" "$@") 2>&1)"; then
         fail "$description"
         echo "    hook exited non-zero"
         echo "$output" | sed 's/^/      /'
@@ -214,6 +216,44 @@ assert_command_output \
     "" \
     "Superpowers now uses"$'\037'"~/.config/superpowers/skills"$'\037'"~/.claude/skills"$'\037'"legacy" \
     "$legacy_home" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    bash "$HOOK_UNDER_TEST"
+
+echo "SessionStart artifact-location directive tests"
+
+# A configured location has to survive the move into a worktree: using-git-
+# worktrees puts the session there, and that is where writing-plans runs.
+worktree_root="$(cd "$TEST_ROOT" && pwd -P)/worktree-case"
+mkdir -p "$worktree_root/main"
+git -C "$worktree_root/main" init --quiet
+git -C "$worktree_root/main" -c user.email=t@t -c user.name=t \
+    commit --quiet --allow-empty -m init
+(cd "$worktree_root/main" && \
+    "$REPO_ROOT/scripts/superpowers-config" set specs "$worktree_root/chosen-specs" >/dev/null)
+git -C "$worktree_root/main" worktree add --quiet -b wt "$worktree_root/wt"
+
+worktree_home="$(make_home worktree-config)"
+HOOK_CWD="$worktree_root/wt" assert_command_output \
+    "a configured specs path reaches the session from inside a worktree" \
+    "nested" \
+    "$worktree_root/chosen-specs" \
+    "" \
+    "$worktree_home" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    bash "$HOOK_UNDER_TEST"
+
+# An unconfigured repo must stay silent: the skills' own documented defaults
+# are correct there, and a directive repeating them is wasted context.
+plain_root="$(cd "$TEST_ROOT" && pwd -P)/unconfigured"
+mkdir -p "$plain_root"
+git -C "$plain_root" init --quiet
+plain_home="$(make_home unconfigured)"
+HOOK_CWD="$plain_root" assert_command_output \
+    "an unconfigured repo gets no artifact-location directive" \
+    "nested" \
+    "" \
+    "Your human partner has configured where Superpowers documents are written" \
+    "$plain_home" \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     bash "$HOOK_UNDER_TEST"
 

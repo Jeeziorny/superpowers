@@ -25,9 +25,25 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 
+# The checkout that owns the repository, as opposed to the one you happen to be
+# standing in. Inside a linked worktree --show-toplevel is the worktree itself,
+# so project config anchored there is invisible from every worktree -- which is
+# exactly where writing-plans runs. --git-common-dir is the shared .git from
+# anywhere (worktree, main checkout, or a subdirectory of either); its parent is
+# the main checkout. --path-format=absolute needs git 2.31+; older git falls
+# back to repo_root, i.e. the pre-worktree behaviour.
+main_root() {
+    local git_dir
+    git_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+        || { repo_root; return; }
+    [ -n "$git_dir" ] || { repo_root; return; }
+    dirname "$git_dir"
+}
+
 user_config() { printf '%s/superpowers/config' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
-project_config() { printf '%s/.superpowers/config' "$(repo_root)"; }
+# Shared by every worktree: one setting per repository, not per checkout.
+project_config() { printf '%s/.superpowers/config' "$(main_root)"; }
 
 # read_key FILE KEY -> prints value, empty if absent.
 # Ignores comments and trailing whitespace; the last assignment wins.
