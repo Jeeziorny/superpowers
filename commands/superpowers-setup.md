@@ -44,7 +44,19 @@ Arguments (both optional): $ARGUMENTS
    "${CLAUDE_PLUGIN_ROOT}/scripts/superpowers-config" set plans "<path>"
    ```
 
-5. **Confirm** by showing the resolved result:
+5. **Verify coverage.** This fails if any skill still names a default path
+   without saying a configured location overrides it — the case where an agent
+   copies the old path out of a skill and ignores the setting:
+
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/superpowers-config" check
+   ```
+
+   If it exits non-zero, report the listed lines to your human partner rather
+   than editing them silently. Skill text is behaviour-shaping and changing it
+   is their call.
+
+6. **Confirm** by showing the resolved result:
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/superpowers-config" show

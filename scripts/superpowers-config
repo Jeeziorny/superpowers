@@ -6,6 +6,7 @@
 #   superpowers-config set   specs|plans PATH [--user]
 #   superpowers-config show
 #   superpowers-config path  [--user]
+#   superpowers-config check
 #
 # Resolution order (first hit wins):
 #   1. $SUPERPOWERS_SPECS_DIR / $SUPERPOWERS_PLANS_DIR
@@ -75,6 +76,34 @@ write_key() {
     mv "$tmp" "$file"
 }
 
+plugin_root() { (cd "$(dirname "$0")/.." && pwd); }
+
+# Report skill lines that name a default artifact path without an adjacent
+# clause telling the agent a configured location wins. Those are the lines a
+# model can copy verbatim, sending documents to the old path despite config.
+# A default is fine as long as the override is stated on it or the next line.
+check_hardcoded() {
+    local root file found=0 hits
+    root=$(plugin_root)
+    while IFS= read -r file; do
+        hits=$(awk -v f="${file#"$root"/}" '
+            { line[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    if (line[i] !~ /docs\/superpowers\/(specs|plans)/) continue
+                    ctx = line[i] "\n" line[i + 1]
+                    if (ctx ~ /instructions declare|User preferences|override this default/) continue
+                    printf "  %s:%d: %s\n", f, i, line[i]
+                }
+            }' "$file")
+        if [ -n "$hits" ]; then
+            printf '%s\n' "$hits"
+            found=1
+        fi
+    done < <(find "$root/skills" -type f -name '*.md' | sort)
+    return $found
+}
+
 cmd=${1:-}
 case "$cmd" in
     get)
@@ -112,6 +141,15 @@ case "$cmd" in
         ;;
     path)
         if [ "${2:-}" = "--user" ]; then user_config; else project_config; fi
+        ;;
+    check)
+        if check_hardcoded; then
+            printf 'OK: every skill mention of a default spec/plan path states that a configured location overrides it.\n'
+        else
+            printf '\nThe lines above name a default path with no override clause next to them.\n'
+            printf 'An agent can copy them verbatim and ignore your configured location.\n'
+            exit 1
+        fi
         ;;
     ""|-h|--help|help)
         sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
