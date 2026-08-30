@@ -129,6 +129,81 @@ mkdir -p "$plain"
 assert_eq "a non-git directory falls back to the working directory" \
     "$plain/docs/superpowers/specs" "$(run "$plain" get specs)"
 
+echo "superpowers-config test-conventions"
+
+# Unlike specs and plans this key has no default: a project that has not set it
+# must stay exactly as it is today, with nothing injected into the session.
+repo="$(make_repo conventions-unset)"
+assert_eq "get is empty when no conventions file is configured" \
+    "" "$(run "$repo" get test-conventions)"
+assert_contains "show reports an unset value plainly" \
+    "test_conventions=(unset)" "$(run "$repo" show)"
+
+repo="$(make_repo conventions)"
+conventions="$repo/TEST-CONVENTIONS.md"
+: > "$conventions"
+
+# A typo'd path would otherwise configure a file nothing ever reads, and the
+# only symptom is conventions silently not being followed.
+if run "$repo" set test-conventions "docs/conventions.md" >/dev/null 2>&1; then
+    fail "set rejects a relative path" "command succeeded"
+else
+    pass "set rejects a relative path"
+fi
+if run "$repo" set test-conventions "$repo/missing.md" >/dev/null 2>&1; then
+    fail "set rejects a file that does not exist" "command succeeded"
+else
+    pass "set rejects a file that does not exist"
+fi
+if run "$repo" set test-conventions "$repo" >/dev/null 2>&1; then
+    fail "set rejects a directory" "command succeeded"
+else
+    pass "set rejects a directory"
+fi
+
+run "$repo" set test-conventions "$conventions" >/dev/null
+assert_eq "get returns the configured file" \
+    "$conventions" "$(run "$repo" get test-conventions)"
+assert_contains "the setting lands in the project config file" \
+    "test_conventions_file=$conventions" "$(cat "$repo/.superpowers/config")"
+assert_contains "show reports the configured file" \
+    "test_conventions=$conventions" "$(run "$repo" show)"
+
+other="$repo/OTHER.md"
+: > "$other"
+assert_eq "SUPERPOWERS_TEST_CONVENTIONS overrides the config file" \
+    "$other" "$(cd "$repo" && SUPERPOWERS_TEST_CONVENTIONS="$other" "$CONFIG" get test-conventions)"
+
+# The same worktree rule as specs and plans: tests are written in worktrees.
+conventions_wt="$TEST_ROOT/conventions-worktree"
+git -C "$repo" worktree add --quiet -b wt "$conventions_wt" >/dev/null 2>&1
+assert_eq "the conventions file resolves from inside a linked worktree" \
+    "$conventions" "$(run "$conventions_wt" get test-conventions)"
+
+echo "superpowers-config unset"
+
+run "$repo" unset test-conventions >/dev/null
+assert_eq "unset clears the conventions file" "" "$(run "$repo" get test-conventions)"
+
+# Clearing one key must not disturb the others in the same file.
+run "$repo" set specs "$TEST_ROOT/kept-specs" >/dev/null
+run "$repo" set test-conventions "$conventions" >/dev/null
+run "$repo" unset test-conventions >/dev/null
+assert_eq "unset leaves the other keys alone" \
+    "$TEST_ROOT/kept-specs" "$(run "$repo" get specs)"
+
+# specs and plans have defaults, so clearing them returns the default rather
+# than an empty string.
+run "$repo" unset specs >/dev/null
+assert_eq "unset restores the documented default for specs" \
+    "$repo/docs/superpowers/specs" "$(run "$repo" get specs)"
+
+if run "$repo" unset nonsense >/dev/null 2>&1; then
+    fail "unset rejects an unknown key" "command succeeded"
+else
+    pass "unset rejects an unknown key"
+fi
+
 if [ "$FAILURES" -gt 0 ]; then
     echo "STATUS: FAILED ($FAILURES failure(s))"
     exit 1

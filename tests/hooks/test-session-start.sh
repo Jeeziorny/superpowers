@@ -257,6 +257,39 @@ HOOK_CWD="$plain_root" assert_command_output \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     bash "$HOOK_UNDER_TEST"
 
+echo "SessionStart test-conventions directive tests"
+
+# The TDD skill cannot name a project's conventions file, so the path has to
+# reach the session some other way. This is that way.
+conventions_root="$(cd "$TEST_ROOT" && pwd -P)/conventions-case"
+mkdir -p "$conventions_root"
+git -C "$conventions_root" init --quiet
+conventions_file="$conventions_root/TEST-CONVENTIONS.md"
+: > "$conventions_file"
+(cd "$conventions_root" && \
+    "$REPO_ROOT/scripts/superpowers-config" set test-conventions "$conventions_file" >/dev/null)
+
+conventions_home="$(make_home test-conventions)"
+HOOK_CWD="$conventions_root" assert_command_output \
+    "a configured conventions file reaches the session" \
+    "nested" \
+    "$conventions_file" \
+    "" \
+    "$conventions_home" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    bash "$HOOK_UNDER_TEST"
+
+# Every project that has not opted in must be byte-for-byte unaffected.
+no_conventions_home="$(make_home no-test-conventions)"
+HOOK_CWD="$plain_root" assert_command_output \
+    "a project with no conventions file gets no directive" \
+    "nested" \
+    "" \
+    "test conventions" \
+    "$no_conventions_home" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    bash "$HOOK_UNDER_TEST"
+
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "STATUS: FAILED ($FAILURES failure(s))"
     exit 1
