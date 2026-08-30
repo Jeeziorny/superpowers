@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Resolve and persist Superpowers artifact locations (specs, plans).
+#
+# Usage:
+#   superpowers-config get   specs|plans
+#   superpowers-config set   specs|plans PATH [--user]
+#   superpowers-config show
+#   superpowers-config path  [--user]
+#
+# Resolution order (first hit wins):
+#   1. $SUPERPOWERS_SPECS_DIR / $SUPERPOWERS_PLANS_DIR
+#   2. project config  <git-toplevel>/.superpowers/config
+#   3. user config     ${XDG_CONFIG_HOME:-$HOME/.config}/superpowers/config
+#   4. built-in default (docs/superpowers/specs, docs/superpowers/plans)
+#
+# Config format is KEY=value, one per line. It is parsed, never sourced.
+
+set -euo pipefail
+
+DEFAULT_SPECS="docs/superpowers/specs"
+DEFAULT_PLANS="docs/superpowers/plans"
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
+
+user_config() { printf '%s/superpowers/config' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+
+project_config() { printf '%s/.superpowers/config' "$(repo_root)"; }
+
+# read_key FILE KEY -> prints value, empty if absent.
+# Ignores comments and trailing whitespace; the last assignment wins.
+read_key() {
+    local file=$1 key=$2
+    [ -f "$file" ] || return 0
+    sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" \
+        | sed 's/[[:space:]]*$//' | grep -v '^$' | tail -n 1
+}
+
+resolve() {
+    local what=$1 key env_val val
+    case "$what" in
+        specs) key=specs_dir; env_val=${SUPERPOWERS_SPECS_DIR:-} ;;
+        plans) key=plans_dir; env_val=${SUPERPOWERS_PLANS_DIR:-} ;;
+        *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
+    esac
+
+    val=$env_val
+    [ -n "$val" ] || val=$(read_key "$(project_config)" "$key")
+    [ -n "$val" ] || val=$(read_key "$(user_config)" "$key")
+    if [ -z "$val" ]; then
+        case "$what" in
+            specs) val=$DEFAULT_SPECS ;;
+            plans) val=$DEFAULT_PLANS ;;
+        esac
+    fi
+
+    # Relative values anchor to the repo root; absolute ones pass through.
+    case "$val" in
+        /*) printf '%s\n' "$val" ;;
+        *)  printf '%s/%s\n' "$(repo_root)" "$val" ;;
+    esac
+}
+
+# write_key FILE KEY VALUE - replaces an existing assignment or appends.
+write_key() {
+    local file=$1 key=$2 value=$3 dir tmp
+    dir=$(dirname "$file")
+    mkdir -p "$dir"
+    tmp=$(mktemp "${file}.XXXXXX")
+    if [ -f "$file" ]; then
+        grep -v "^[[:space:]]*${key}[[:space:]]*=" "$file" > "$tmp" || true
+    fi
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$file"
+}
+
+cmd=${1:-}
+case "$cmd" in
+    get)
+        [ $# -ge 2 ] || die "usage: superpowers-config get specs|plans"
+        resolve "$2"
+        ;;
+    set)
+        [ $# -ge 3 ] || die "usage: superpowers-config set specs|plans PATH [--user]"
+        what=$2; value=$3; scope=${4:-}
+        case "$what" in
+            specs) key=specs_dir ;;
+            plans) key=plans_dir ;;
+            *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
+        esac
+        case "$value" in
+            /*) ;;
+            *) die "path must be absolute: $value" ;;
+        esac
+        case "$value" in
+            *"
+"*) die "path must not contain newlines" ;;
+        esac
+        if [ "$scope" = "--user" ]; then
+            target=$(user_config)
+        else
+            target=$(project_config)
+        fi
+        write_key "$target" "$key" "$value"
+        mkdir -p "$value"
+        printf '%s -> %s (in %s)\n' "$what" "$value" "$target"
+        ;;
+    show)
+        printf 'specs=%s\n' "$(resolve specs)"
+        printf 'plans=%s\n' "$(resolve plans)"
+        ;;
+    path)
+        if [ "${2:-}" = "--user" ]; then user_config; else project_config; fi
+        ;;
+    ""|-h|--help|help)
+        sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        die "unknown command: $cmd (try --help)"
+        ;;
+esac
