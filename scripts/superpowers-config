@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# Resolve and persist Superpowers artifact locations (specs, plans).
+# Point the Superpowers spec and plan documents at a location you choose.
 #
 # Usage:
-#   superpowers-config get   specs|plans
-#   superpowers-config set   specs|plans PATH [--user]
-#   superpowers-config show
-#   superpowers-config path  [--user]
+#   superpowers-config set    specs|plans PATH [--user]
+#   superpowers-config apply
 #   superpowers-config check
+#   superpowers-config revert
+#   superpowers-config get    specs|plans
+#   superpowers-config show
+#   superpowers-config path   [--user]
 #
-# Resolution order (first hit wins):
+# 'set' records the choice; 'apply' rewrites the skill files to match it.
+# The recorded choice is what lets 'apply' be re-run after a plugin update
+# replaces the skill files, without having to ask for the path again.
+#
+# Config lookup order (first hit wins):
 #   1. $SUPERPOWERS_SPECS_DIR / $SUPERPOWERS_PLANS_DIR
 #   2. project config  <git-toplevel>/.superpowers/config
 #   3. user config     ${XDG_CONFIG_HOME:-$HOME/.config}/superpowers/config
-#   4. built-in default (docs/superpowers/specs, docs/superpowers/plans)
 #
 # Config format is KEY=value, one per line. It is parsed, never sourced.
 
 set -euo pipefail
 
+# The literal strings as they appear in the shipped skill files.
 DEFAULT_SPECS="docs/superpowers/specs"
 DEFAULT_PLANS="docs/superpowers/plans"
 
@@ -25,52 +31,35 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 
+plugin_root() { (cd "$(dirname "$0")/.." && pwd); }
+
 user_config() { printf '%s/superpowers/config' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
 project_config() { printf '%s/.superpowers/config' "$(repo_root)"; }
 
+default_for() {
+    case "$1" in
+        specs) printf '%s' "$DEFAULT_SPECS" ;;
+        plans) printf '%s' "$DEFAULT_PLANS" ;;
+        *) die "unknown key: $1 (expected 'specs' or 'plans')" ;;
+    esac
+}
+
 # read_key FILE KEY -> prints value, empty if absent.
-# Ignores comments and trailing whitespace; the last assignment wins.
+# awk rather than `grep -v` for the blank-line filter: grep exits 1 when it
+# matches nothing, and under `pipefail` that would fail the whole lookup
+# instead of reporting "key absent".
 read_key() {
     local file=$1 key=$2
     [ -f "$file" ] || return 0
-    # awk rather than `grep -v` for the blank-line filter: grep exits 1 when it
-    # matches nothing, and under `pipefail` that would fail the whole lookup
-    # instead of reporting "key absent".
     sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" \
         | sed 's/[[:space:]]*$//' | awk 'NF' | tail -n 1
 }
 
-resolve() {
-    local what=$1 key env_val val
-    case "$what" in
-        specs) key=specs_dir; env_val=${SUPERPOWERS_SPECS_DIR:-} ;;
-        plans) key=plans_dir; env_val=${SUPERPOWERS_PLANS_DIR:-} ;;
-        *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
-    esac
-
-    val=$env_val
-    [ -n "$val" ] || val=$(read_key "$(project_config)" "$key")
-    [ -n "$val" ] || val=$(read_key "$(user_config)" "$key")
-    if [ -z "$val" ]; then
-        case "$what" in
-            specs) val=$DEFAULT_SPECS ;;
-            plans) val=$DEFAULT_PLANS ;;
-        esac
-    fi
-
-    # Relative values anchor to the repo root; absolute ones pass through.
-    case "$val" in
-        /*) printf '%s\n' "$val" ;;
-        *)  printf '%s/%s\n' "$(repo_root)" "$val" ;;
-    esac
-}
-
 # write_key FILE KEY VALUE - replaces an existing assignment or appends.
 write_key() {
-    local file=$1 key=$2 value=$3 dir tmp
-    dir=$(dirname "$file")
-    mkdir -p "$dir"
+    local file=$1 key=$2 value=$3 tmp
+    mkdir -p "$(dirname "$file")"
     tmp=$(mktemp "${file}.XXXXXX")
     if [ -f "$file" ]; then
         grep -v "^[[:space:]]*${key}[[:space:]]*=" "$file" > "$tmp" || true
@@ -79,83 +68,167 @@ write_key() {
     mv "$tmp" "$file"
 }
 
-plugin_root() { (cd "$(dirname "$0")/.." && pwd); }
+del_key() {
+    local file=$1 key=$2 tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp "${file}.XXXXXX")
+    grep -v "^[[:space:]]*${key}[[:space:]]*=" "$file" > "$tmp" || true
+    mv "$tmp" "$file"
+}
 
-# Report skill lines that name a default artifact path without an adjacent
-# clause telling the agent a configured location wins. Those are the lines a
-# model can copy verbatim, sending documents to the old path despite config.
-# A default is fine as long as the override is stated on it or the next line.
-check_hardcoded() {
-    local root file found=0 hits
-    root=$(plugin_root)
+# The path the user chose, verbatim. Empty when nothing is configured.
+raw_value() {
+    local what=$1 val
+    case "$what" in
+        specs) val=${SUPERPOWERS_SPECS_DIR:-} ;;
+        plans) val=${SUPERPOWERS_PLANS_DIR:-} ;;
+        *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
+    esac
+    [ -n "$val" ] || val=$(read_key "$(project_config)" "${what}_dir")
+    [ -n "$val" ] || val=$(read_key "$(user_config)" "${what}_dir")
+    printf '%s' "$val"
+}
+
+# The string currently written into the skill files.
+applied_value() {
+    local what=$1 val
+    val=$(read_key "$(project_config)" "applied_${what}")
+    [ -n "$val" ] || val=$(read_key "$(user_config)" "applied_${what}")
+    [ -n "$val" ] || val=$(default_for "$what")
+    printf '%s' "$val"
+}
+
+# Absolute form, for display. Relative values anchor to the repo root.
+resolve() {
+    local val
+    val=$(raw_value "$1")
+    [ -n "$val" ] || val=$(default_for "$1")
+    case "$val" in
+        /*) printf '%s\n' "$val" ;;
+        *)  printf '%s/%s\n' "$(repo_root)" "$val" ;;
+    esac
+}
+
+skill_files() { find "$(plugin_root)/skills" -type f -name '*.md' | sort; }
+
+# Rewrite FROM -> TO across the skill files. Reports how many files changed.
+# Writes through a temp file rather than `sed -i`, whose syntax differs
+# between GNU and BSD sed.
+rewrite() {
+    local from=$1 to=$2 file tmp changed=0
+    [ "$from" = "$to" ] && { printf '0'; return 0; }
     while IFS= read -r file; do
-        hits=$(awk -v f="${file#"$root"/}" '
-            { line[NR] = $0 }
-            END {
-                for (i = 1; i <= NR; i++) {
-                    if (line[i] !~ /docs\/superpowers\/(specs|plans)/) continue
-                    ctx = line[i] "\n" line[i + 1]
-                    if (ctx ~ /instructions declare|User preferences|override this default/) continue
-                    printf "  %s:%d: %s\n", f, i, line[i]
-                }
-            }' "$file")
-        if [ -n "$hits" ]; then
-            printf '%s\n' "$hits"
-            found=1
+        grep -qF "$from" "$file" || continue
+        tmp=$(mktemp "${file}.XXXXXX")
+        sed "s|${from}|${to}|g" "$file" > "$tmp"
+        mv "$tmp" "$file"
+        changed=$((changed + 1))
+    done < <(skill_files)
+    printf '%s' "$changed"
+}
+
+do_apply() {
+    local what raw applied n total=0
+    for what in specs plans; do
+        raw=$(raw_value "$what")
+        if [ -z "$raw" ]; then
+            printf '%s: not configured, left at %s\n' "$what" "$(default_for "$what")"
+            continue
         fi
-    done < <(find "$root/skills" -type f -name '*.md' | sort)
-    return $found
+        applied=$(applied_value "$what")
+        if [ "$applied" = "$raw" ]; then
+            printf '%s: already points at %s\n' "$what" "$raw"
+            continue
+        fi
+        n=$(rewrite "$applied" "$raw")
+        write_key "$(project_config)" "applied_${what}" "$raw"
+        mkdir -p "$raw"
+        printf '%s: %s -> %s (%s file(s) updated)\n' "$what" "$applied" "$raw" "$n"
+        total=$((total + n))
+    done
+    [ "$total" -gt 0 ] || printf 'Nothing to change.\n'
+}
+
+do_revert() {
+    local what applied def n
+    for what in specs plans; do
+        applied=$(applied_value "$what")
+        def=$(default_for "$what")
+        if [ "$applied" = "$def" ]; then
+            printf '%s: already at the shipped default\n' "$what"
+            continue
+        fi
+        n=$(rewrite "$applied" "$def")
+        del_key "$(project_config)" "applied_${what}"
+        printf '%s: %s -> %s (%s file(s) restored)\n' "$what" "$applied" "$def" "$n"
+    done
+}
+
+# Verify the skill files actually say what the config claims: the chosen path
+# is present, and no stale path was left behind by a partial or reverted run.
+do_check() {
+    local what raw def stale missing=0
+    for what in specs plans; do
+        raw=$(raw_value "$what")
+        def=$(default_for "$what")
+        if [ -z "$raw" ]; then
+            printf 'OK  %s: not configured; skills use the shipped default (%s)\n' "$what" "$def"
+            continue
+        fi
+        stale=$(grep -rnF "$def" "$(plugin_root)/skills" || true)
+        if [ -n "$stale" ]; then
+            printf 'BAD %s: configured as %s, but the shipped default is still present in:\n' "$what" "$raw"
+            printf '%s\n' "$stale" | sed "s|$(plugin_root)/||; s|^|      |"
+            missing=1
+            continue
+        fi
+        if grep -rqF "$raw" "$(plugin_root)/skills"; then
+            printf 'OK  %s: skills point at %s\n' "$what" "$raw"
+        else
+            printf 'BAD %s: configured as %s, but no skill mentions it. Run: superpowers-config apply\n' "$what" "$raw"
+            missing=1
+        fi
+    done
+    [ "$missing" -eq 0 ] || exit 1
 }
 
 cmd=${1:-}
 case "$cmd" in
-    get)
-        [ $# -ge 2 ] || die "usage: superpowers-config get specs|plans"
-        resolve "$2"
-        ;;
     set)
         [ $# -ge 3 ] || die "usage: superpowers-config set specs|plans PATH [--user]"
         what=$2; value=$3; scope=${4:-}
-        case "$what" in
-            specs) key=specs_dir ;;
-            plans) key=plans_dir ;;
-            *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
-        esac
+        default_for "$what" > /dev/null   # validates the key name
         case "$value" in
             /*) ;;
             *) die "path must be absolute: $value" ;;
         esac
         case "$value" in
-            *"
-"*) die "path must not contain newlines" ;;
+            *[\|\&\\]*|*"
+"*) die "path must not contain | & \\ or newlines: $value" ;;
         esac
-        if [ "$scope" = "--user" ]; then
-            target=$(user_config)
-        else
-            target=$(project_config)
-        fi
-        write_key "$target" "$key" "$value"
-        mkdir -p "$value"
-        printf '%s -> %s (in %s)\n' "$what" "$value" "$target"
+        if [ "$scope" = "--user" ]; then target=$(user_config); else target=$(project_config); fi
+        write_key "$target" "${what}_dir" "$value"
+        printf '%s recorded as %s (in %s)\n' "$what" "$value" "$target"
+        printf "Run 'superpowers-config apply' to update the skill files.\n"
+        ;;
+    apply)  do_apply ;;
+    revert) do_revert ;;
+    check)  do_check ;;
+    get)
+        [ $# -ge 2 ] || die "usage: superpowers-config get specs|plans"
+        resolve "$2"
         ;;
     show)
         printf 'specs=%s\n' "$(resolve specs)"
         printf 'plans=%s\n' "$(resolve plans)"
+        printf 'applied_specs=%s\n' "$(applied_value specs)"
+        printf 'applied_plans=%s\n' "$(applied_value plans)"
         ;;
     path)
         if [ "${2:-}" = "--user" ]; then user_config; else project_config; fi
         ;;
-    check)
-        if check_hardcoded; then
-            printf 'OK: every skill mention of a default spec/plan path states that a configured location overrides it.\n'
-        else
-            printf '\nThe lines above name a default path with no override clause next to them.\n'
-            printf 'An agent can copy them verbatim and ignore your configured location.\n'
-            exit 1
-        fi
-        ;;
     ""|-h|--help|help)
-        sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command: $cmd (try --help)"
