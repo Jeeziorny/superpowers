@@ -15,6 +15,11 @@ using_superpowers_content=$(cat "${PLUGIN_ROOT}/skills/using-superpowers/SKILL.m
 # they have not, the skills' own documented defaults stand unchanged.
 specs_dir=$("${PLUGIN_ROOT}/scripts/superpowers-config" get specs 2>/dev/null || echo "")
 plans_dir=$("${PLUGIN_ROOT}/scripts/superpowers-config" get plans 2>/dev/null || echo "")
+
+# The test-driven-development skill cannot name a project's own conventions
+# file, so the path reaches the session here. Unset means nothing is emitted.
+test_conventions=$("${PLUGIN_ROOT}/scripts/superpowers-config" get test-conventions 2>/dev/null || echo "")
+
 default_specs="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/docs/superpowers/specs"
 default_plans="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/docs/superpowers/plans"
 
@@ -48,6 +53,13 @@ session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the 
 if [ -n "$paths_directive" ]; then
     paths_escaped=$(escape_for_json "$(printf '%b' "$paths_directive")")
     session_context="${session_context}\n\n<EXTREMELY_IMPORTANT>\nYour human partner has configured where Superpowers documents are written. These paths override the default locations documented in the brainstorming and writing-plans skills:\n${paths_escaped}\n\nCreate the directory if it does not exist. Do not write these documents anywhere else, and do not ask which location to use - it is already settled.\n</EXTREMELY_IMPORTANT>"
+fi
+
+# Named here rather than in the skill because the path is per-project. The
+# skill carries the workflow; this file carries what the project decided.
+if [ -n "$test_conventions" ]; then
+    conventions_escaped=$(escape_for_json "$test_conventions")
+    session_context="${session_context}\n\n<EXTREMELY_IMPORTANT>\nThis project records its own test conventions in \`${conventions_escaped}\`.\n\nRead that file before you write or change any test here - before the first RED test, not after. It governs how tests are named, structured, fixtured and run in this project, and it wins over the generic examples in superpowers:test-driven-development wherever the two differ.\n\nThe TDD workflow itself is unchanged: test first, watch it fail, minimal code to pass. Project conventions decide what the test looks like, not whether you write it first.\n</EXTREMELY_IMPORTANT>"
 fi
 
 # Output context injection as JSON.

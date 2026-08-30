@@ -209,6 +209,14 @@ When writing or changing any test, read [writing-good-tests.md](writing-good-tes
 - Keep test-only code in test utilities, out of production classes
 - Understand a dependency's side effects before mocking it
 
+## Project Conventions
+
+A project may record its own test conventions in a file — naming, fixtures, factories, how the suite is run. When your instructions name such a file, read it before the first RED test, not after. It decides what the test looks like: the examples in this skill are generic and yours are not.
+
+The workflow above does not bend to it. Project conventions govern the shape of the test; test-first, watch-it-fail, minimal-code-to-pass still apply exactly as written.
+
+No conventions file? Follow the surrounding tests in the codebase.
+
 ## Common Rationalizations
 
 | Excuse | Reality |

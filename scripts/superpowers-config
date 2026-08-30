@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# Resolve and persist Superpowers artifact locations (specs, plans).
+# Resolve and persist Superpowers project settings: where specs and plans are
+# written, and which file records the project's own test conventions.
 #
 # Usage:
-#   superpowers-config get   specs|plans
-#   superpowers-config set   specs|plans PATH [--user]
+#   superpowers-config get   specs|plans|test-conventions
+#   superpowers-config set   specs|plans|test-conventions PATH [--user]
+#   superpowers-config unset specs|plans|test-conventions [--user]
 #   superpowers-config show
 #   superpowers-config path  [--user]
 #   superpowers-config check
 #
 # Resolution order (first hit wins):
 #   1. $SUPERPOWERS_SPECS_DIR / $SUPERPOWERS_PLANS_DIR
-#   2. project config  <git-toplevel>/.superpowers/config
+#      $SUPERPOWERS_TEST_CONVENTIONS
+#   2. project config  <main checkout>/.superpowers/config
 #   3. user config     ${XDG_CONFIG_HOME:-$HOME/.config}/superpowers/config
 #   4. built-in default (docs/superpowers/specs, docs/superpowers/plans)
+#
+# test-conventions has no built-in default: unset resolves to nothing, and the
+# SessionStart hook injects nothing. It names an existing file, not a directory.
 #
 # Config format is KEY=value, one per line. It is parsed, never sourced.
 
@@ -57,12 +63,23 @@ read_key() {
         | sed 's/[[:space:]]*$//' | awk 'NF' | tail -n 1
 }
 
+# config_key WHAT -> the KEY= name this setting is stored under.
+config_key() {
+    case "$1" in
+        specs) printf 'specs_dir' ;;
+        plans) printf 'plans_dir' ;;
+        test-conventions) printf 'test_conventions_file' ;;
+        *) die "unknown key: $1 (expected 'specs', 'plans' or 'test-conventions')" ;;
+    esac
+}
+
 resolve() {
     local what=$1 key env_val val
+    key=$(config_key "$what")
     case "$what" in
-        specs) key=specs_dir; env_val=${SUPERPOWERS_SPECS_DIR:-} ;;
-        plans) key=plans_dir; env_val=${SUPERPOWERS_PLANS_DIR:-} ;;
-        *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
+        specs) env_val=${SUPERPOWERS_SPECS_DIR:-} ;;
+        plans) env_val=${SUPERPOWERS_PLANS_DIR:-} ;;
+        test-conventions) env_val=${SUPERPOWERS_TEST_CONVENTIONS:-} ;;
     esac
 
     val=$env_val
@@ -72,6 +89,9 @@ resolve() {
         case "$what" in
             specs) val=$DEFAULT_SPECS ;;
             plans) val=$DEFAULT_PLANS ;;
+            # No default. Unset means the project has no conventions file, and
+            # nothing is injected into the session -- callers check for empty.
+            test-conventions) return 0 ;;
         esac
     fi
 
@@ -92,6 +112,15 @@ write_key() {
         grep -v "^[[:space:]]*${key}[[:space:]]*=" "$file" > "$tmp" || true
     fi
     printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$file"
+}
+
+# clear_key FILE KEY - drops every assignment of KEY, leaving the rest intact.
+clear_key() {
+    local file=$1 key=$2 tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp "${file}.XXXXXX")
+    grep -v "^[[:space:]]*${key}[[:space:]]*=" "$file" > "$tmp" || true
     mv "$tmp" "$file"
 }
 
@@ -126,17 +155,13 @@ check_hardcoded() {
 cmd=${1:-}
 case "$cmd" in
     get)
-        [ $# -ge 2 ] || die "usage: superpowers-config get specs|plans"
+        [ $# -ge 2 ] || die "usage: superpowers-config get specs|plans|test-conventions"
         resolve "$2"
         ;;
     set)
-        [ $# -ge 3 ] || die "usage: superpowers-config set specs|plans PATH [--user]"
+        [ $# -ge 3 ] || die "usage: superpowers-config set specs|plans|test-conventions PATH [--user]"
         what=$2; value=$3; scope=${4:-}
-        case "$what" in
-            specs) key=specs_dir ;;
-            plans) key=plans_dir ;;
-            *) die "unknown key: $what (expected 'specs' or 'plans')" ;;
-        esac
+        key=$(config_key "$what")
         case "$value" in
             /*) ;;
             *) die "path must be absolute: $value" ;;
@@ -145,18 +170,39 @@ case "$cmd" in
             *"
 "*) die "path must not contain newlines" ;;
         esac
+        # specs and plans name a directory to create; test-conventions names a
+        # document that must already exist. A typo there would configure a file
+        # nothing reads, and the only symptom is conventions being ignored.
+        if [ "$what" = "test-conventions" ]; then
+            [ -e "$value" ] || die "no such file: $value (create it first)"
+            [ -f "$value" ] || die "not a regular file: $value"
+        fi
         if [ "$scope" = "--user" ]; then
             target=$(user_config)
         else
             target=$(project_config)
         fi
         write_key "$target" "$key" "$value"
-        mkdir -p "$value"
+        [ "$what" = "test-conventions" ] || mkdir -p "$value"
         printf '%s -> %s (in %s)\n' "$what" "$value" "$target"
+        ;;
+    unset)
+        [ $# -ge 2 ] || die "usage: superpowers-config unset specs|plans|test-conventions [--user]"
+        what=$2; scope=${3:-}
+        key=$(config_key "$what")
+        if [ "$scope" = "--user" ]; then
+            target=$(user_config)
+        else
+            target=$(project_config)
+        fi
+        clear_key "$target" "$key"
+        printf '%s cleared (in %s)\n' "$what" "$target"
         ;;
     show)
         printf 'specs=%s\n' "$(resolve specs)"
         printf 'plans=%s\n' "$(resolve plans)"
+        conventions=$(resolve test-conventions)
+        printf 'test_conventions=%s\n' "${conventions:-(unset)}"
         ;;
     path)
         if [ "${2:-}" = "--user" ]; then user_config; else project_config; fi
@@ -171,7 +217,7 @@ case "$cmd" in
         fi
         ;;
     ""|-h|--help|help)
-        sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         die "unknown command: $cmd (try --help)"
