@@ -10,6 +10,22 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Read using-superpowers content
 using_superpowers_content=$(cat "${PLUGIN_ROOT}/skills/using-superpowers/SKILL.md" 2>&1 || echo "Error reading using-superpowers skill")
 
+# Resolve configured artifact locations (see scripts/superpowers-config).
+# Only emit a directive when the user has actually chosen a location; when
+# they have not, the skills' own documented defaults stand unchanged.
+specs_dir=$("${PLUGIN_ROOT}/scripts/superpowers-config" get specs 2>/dev/null || echo "")
+plans_dir=$("${PLUGIN_ROOT}/scripts/superpowers-config" get plans 2>/dev/null || echo "")
+default_specs="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/docs/superpowers/specs"
+default_plans="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/docs/superpowers/plans"
+
+paths_directive=""
+if [ -n "$specs_dir" ] && [ "$specs_dir" != "$default_specs" ]; then
+    paths_directive="${paths_directive}\n- Design specs go in \`${specs_dir}/\` (filename convention unchanged: \`YYYY-MM-DD-<topic>-design.md\`)."
+fi
+if [ -n "$plans_dir" ] && [ "$plans_dir" != "$default_plans" ]; then
+    paths_directive="${paths_directive}\n- Implementation plans go in \`${plans_dir}/\` (filename convention unchanged: \`YYYY-MM-DD-<feature-name>.md\`)."
+fi
+
 # Escape string for JSON embedding using bash parameter substitution.
 # Each ${s//old/new} is a single C-level pass - orders of magnitude
 # faster than the character-by-character loop this replaces.
@@ -25,6 +41,14 @@ escape_for_json() {
 
 using_superpowers_escaped=$(escape_for_json "$using_superpowers_content")
 session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the full content of your 'superpowers:using-superpowers' skill - your introduction to using skills. For all other skills, use the 'Skill' tool:**\n\n${using_superpowers_escaped}\n</EXTREMELY_IMPORTANT>"
+
+# Skills defer to a stated user preference over their built-in default path,
+# so a configured location is injected as an explicit instruction rather than
+# by rewriting the skill files.
+if [ -n "$paths_directive" ]; then
+    paths_escaped=$(escape_for_json "$(printf '%b' "$paths_directive")")
+    session_context="${session_context}\n\n<EXTREMELY_IMPORTANT>\nYour human partner has configured where Superpowers documents are written. These paths override the default locations documented in the brainstorming and writing-plans skills:\n${paths_escaped}\n\nCreate the directory if it does not exist. Do not write these documents anywhere else, and do not ask which location to use - it is already settled.\n</EXTREMELY_IMPORTANT>"
+fi
 
 # Output context injection as JSON.
 # Cursor hooks expect additional_context (snake_case).
